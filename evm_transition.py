@@ -4,118 +4,150 @@ import json
 import os
 import subprocess
 import sys
+import copy
+
+from eth_keys import keys
+from eth_utils import decode_hex, encode_hex, to_wei
+from eth_typing import Address
+from eth import constants
+from eth.rlp.logs import Log
+from eth.rlp.receipts import Receipt
+from eth.db.atomic import AtomicDB
+from eth.vm.forks.byzantium import ByzantiumVM
+from eth.vm.forks.byzantium.transactions import ByzantiumTransaction
+from eth.chains.base import MiningChain
+import rlp
 
 from blocks import *
 from web3 import Web3
 from genesis_state import *
-from config import DEADBEEF
+from config import DEADBEEF, SHARD_IDS
 from generate_transactions import format_transaction
 
 abi = json.loads('[{"constant":false,"inputs":[{"name":"_shard_ID","type":"uint256"},{"name":"_sendGas","type":"uint256"},{"name":"_sendToAddress","type":"address"},{"name":"_data","type":"bytes"}],"name":"send","outputs":[],"payable":true,"stateMutability":"payable","type":"function"},{"anonymous":false,"inputs":[{"indexed":true,"name":"shard_ID","type":"uint256"},{"indexed":false,"name":"sendGas","type":"uint256"},{"indexed":false,"name":"sendFromAddress","type":"address"},{"indexed":true,"name":"sendToAddress","type":"address"},{"indexed":false,"name":"value","type":"uint256"},{"indexed":false,"name":"data","type":"bytes"},{"indexed":true,"name":"base","type":"uint256"},{"indexed":false,"name":"TTL","type":"uint256"}],"name":"SentMessage","type":"event"}]')
 
-evm_path = './evm-ubuntu'
-if (sys.platform == 'darwin'):
-    evm_path = './evm-macos'
-
+web3 = Web3()
 contract = web3.eth.contract(address='0x000000000000000000000000000000000000002A', abi=abi)
 
+klass = MiningChain.configure( __name__='TestChain', vm_configuration=( (constants.GENESIS_BLOCK_NUMBER, ByzantiumVM), ) )
+chain = klass.from_genesis(AtomicDB(), genesis_params, genesis_state)
+initial_state = chain.get_vm().state
 
+alice_key = '0x4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318'
+alice_address = web3.eth.account.privateKeyToAccount(alice_key).address.lower()
+alice_nonces = []
 
-def convert_state_to_pre(state):
-    ''' The evm output isn't quite how we want it '''
-    pre = {}
-    for key, value in state["state"]["accounts"].items():
-        # print(value)
-        pre[key] = value
-    return pre
+def make_byzantium_txs(txs, alice_nonce):
+    byzantium_txs = []
+    for tx in txs:
+        tx = copy.copy(tx)
+        print(tx.keys())
+        if 'gasPrice' in tx.keys():
+            tx['gas_price'] = tx['gasPrice']
+            tx.pop('gasPrice')
+        if 'input' in tx.keys():
+            tx['data'] = tx['input']
+            tx.pop('input')
+        if 'hash' in tx.keys():
+            tx.pop('hash')
+        tx_fields = ['nonce', 'gas_price', 'gas', 'value', 'v', 'r', 's']
+        for field in tx_fields:
+            if field in tx.keys():
+                if isinstance(tx[field], str):
+                    tx[field] = int(tx[field], 16)
+        if isinstance(tx['to'], str):
+            tx['to'] = decode_hex(tx['to'])
+        if isinstance(tx['data'], str):
+            tx['data'] = decode_hex(tx['data'])
+        print(tx)
+        try:
+            byzantium_tx = ByzantiumTransaction(**tx)
+            if encode_hex(byzantium_tx.sender) == alice_address:
+                tx['nonce'] = alice_nonce
+                alice_nonce += 1
+                tx.pop('v')
+                tx.pop('r')
+                tx.pop('s')
+                unsigned_tx = ByzantiumTransaction.create_unsigned_transaction(**tx)
+                byzantium_tx = unsigned_tx.as_signed_transaction(keys.PrivateKey(decode_hex(alice_key)))
+            byzantium_txs.append(byzantium_tx)
+        except TypeError:
+            print(tx)
+            assert False, "That tx"
+            pass
+    return byzantium_txs
 
-# NOTES: from convo with steve
-# The “vm state” is really the “pre” part of what we send to evm.
-# The “env” stuff is constant
 # the “transactions” list is a list of transactions that come from the
 #   mempool (originally a file full of test data?) and ones that are constructed from
 #   `MessagePayload`s. (This is done via `web3.eth.account.signTransaction(…)`.)
-# function apply(vm_state, [tx], mapping(S => received)) -> (vm_state, mapping(S => received) )
-def apply_to_state(pre_state, tx, received_log, genesis_blocks):
-    # print(pre_state["pre"][address]["nonce"])   
-    nonce = int(pre_state["pre"][pusher_address]["nonce"], 0)
+# function apply(vm_state, [txs], mapping(S => received)) -> (vm_state, mapping(S => received) )
+def apply_to_state(pre_state, txs, received_log, genesis_blocks):
+    alice_nonce = pre_state.account_db.get_nonce(decode_hex(alice_address))
+    txs = make_byzantium_txs(txs, alice_nonce)
+    nonce = pre_state.account_db.get_nonce(decode_hex(pusher_address))
+
     flattened_payloads = [message.payload for l in received_log.values() for message in l]
     for payload in flattened_payloads:
-        transaction = {
+        unsigned_tx = {
             "gas": 3000000,
-            "gasPrice": "0x2",
-            "nonce": hex(nonce),
+            "gas_price": int("0x2", 16),
+            "nonce": nonce,
             "to": payload.toAddress,
             "value": payload.value,
             "data": payload.data,
         }
+        unsigned_tx = ByzantiumTransaction.create_unsigned_transaction(**unsigned_tx)
+        tx = unsigned_tx.as_signed_transaction(keys.PrivateKey(decode_hex(pusher_key)))
         nonce += 1
-        signed = web3.eth.account.signTransaction(transaction, pusher_key)
-        tx.append(format_transaction(transaction, signed))
+        txs.append(tx)
 
-    # create inputst evm by combining the pre_state, env, and transactions
-    transition_inputs = {}
-    transition_inputs["pre"] = pre_state["pre"]
-    transition_inputs["env"] = pre_state["env"]
-    transition_inputs["transactions"] = tx
+    state_roots = []
+    computations = []
+    all_logs = []
+    receipts = []
 
-    # open evm
-    evm = subprocess.Popen([evm_path, 'apply', '/dev/stdin'], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    for tx in txs:
+        if encode_hex(tx.sender)==alice_address:
+            assert tx.nonce not in alice_nonces, "Nonce {} has occured before".format(tx.nonce)
+            alice_nonces.append(tx.nonce)
+        state_root, computation = pre_state.apply_transaction(tx)
+        state_roots.append(state_root)
+        computations.append(computation)
 
-    out = evm.communicate(json.dumps(transition_inputs).encode())[0].decode('utf-8')
-    # print("out2", out)
+        logs = [
+            Log(address, topics, data)
+            for address, topics, data
+            in computation.get_log_entries()
+        ]
+        all_logs.append(logs)
 
-    result = json.loads(out)
-    new_state = {
-        "env": pre_state["env"],
-        "pre": result["state"]["accounts"].copy(),
-    }
-    for addr, account in new_state["pre"].items():
-        for key in ("nonce", "balance"):
-            account[key] = hex(int(account[key]))
-        for key in ("code", "codeHash"):
-            account[key] = "0x" + account[key]
+        receipt = Receipt(
+            state_root=state_root,
+            gas_used=50, # This is a fake filled-in gas_used value
+            logs=logs,
+        )
+        receipts.append(receipt)
 
-    # look through logs for outgoing messages
     sent_log = {}
     for ID in SHARD_IDS:
         sent_log[ID] = []
-    for receipt in result.get('receipts', []):
-        if receipt['logs'] is not None:
-            for log in receipt['logs']:
-                log['topics'] = [binascii.unhexlify(t[2:]) for t in log['topics']]
-                log['data'] = binascii.unhexlify(log['data'][2:])
-            for event in contract.events.SentMessage().processReceipt(receipt):
-                sent_log[event.args.shard_ID].append(
-                    # This is not a message that will be stored in the sent log, it will be
-                    # postprocessed in make_block. Namely, the next hop shard will be computed,
-                    # the base block will be computed and TTL will be assigned.
-                    Message(
-                        Block(event.args.shard_ID, sources={ID : genesis_blocks[ID] for ID in SHARD_IDS}),
-                        10,
-                        event.args.shard_ID,
-                        MessagePayload(
-                            event.args.sendFromAddress.lower()[2:],
-                            event.args.sendToAddress.lower()[2:],
-                            event.args.value,
-                            event.args.data,
-                        )
+    for receipt in receipts:
+        for event in contract.events.SentMessage().processReceipt(receipt):
+            sent_log[event.args.shard_ID].append(
+                # This is not a message that will be stored in the sent log, it will be
+                # postprocessed in make_block. Namely, the next hop shard will be computed,
+                # the base block will be computed and TTL will be assigned.
+                Message(
+                    Block(event.args.shard_ID, sources={ID : genesis_blocks[ID] for ID in SHARD_IDS}),
+                    10,
+                    event.args.shard_ID,
+                    MessagePayload(
+                        event.args.sendFromAddress.lower()[2:],
+                        event.args.sendToAddress.lower()[2:],
+                        event.args.value,
+                        event.args.data,
                     )
                 )
+            )
 
-    return new_state, sent_log
-
-# received_log = ReceivedLog()
-# received_log.add_received_message(2, Message(
-#     None, # base
-#     5, # TTL
-#     MessagePayload(
-#         0, # from address
-#         "0x1234567890123456789012345678901234567890", # to address
-#         42, # value
-#         "0x", # data
-#     )
-# ))
-# new_state, sent_log = apply_to_state(vm_state, transactions, received_log)
-# print(json.dumps(new_state))
-# print(sent_log)
+    return pre_state, sent_log

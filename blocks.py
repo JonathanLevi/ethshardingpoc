@@ -1,4 +1,5 @@
 from genesis_state import genesis_state
+from evm_transition import initial_state
 
 from config import SHARD_IDS
 from config import VALIDITY_CHECKS_OFF
@@ -85,7 +86,7 @@ class SwitchMessage_ChangeParent(Message):
     def __init__(self, base, TTL, target_shard_ID, new_parent_ID):
         super(SwitchMessage_ChangeParent, self).__init__(base, TTL, target_shard_ID, None)
         self.new_parent_ID = new_parent_ID
-        self.hash = rand.randint(1, 1000000)       
+        self.hash = rand.randint(1, 1000000)
 
     def __hash__(self):
         return self.hash
@@ -94,7 +95,7 @@ class SwitchMessage_ChangeParent(Message):
         return self.hash == message.hash
 
 class Block:
-    def __init__(self, ID, prevblock=None, switch_block=False, txn_log=[], sent_log={}, received_log={}, sources={}, parent_ID=None, child_IDs=None, routing_table=None, vm_state=genesis_state):
+    def __init__(self, ID, prevblock=None, switch_block=False, txn_log=[], sent_log={}, received_log={}, sources={}, parent_ID=None, child_IDs=None, routing_table=None, vm_state=initial_state):
 
         if sent_log == {}:
             for i in SHARD_IDS:
