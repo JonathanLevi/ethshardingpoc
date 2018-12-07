@@ -1,21 +1,20 @@
-from genesis_state import genesis_state
-from evm_transition import initial_state
+import random as rand
 
+from config import DEADBEEF
 from config import SHARD_IDS
 from config import VALIDITY_CHECKS_OFF
 from config import VALIDITY_CHECKS_WARNING_OFF
-from config import DEADBEEF
-import copy
-import random as rand
-
+from evm_transition import initial_state
 
 def format_msg(msg):
-    return "base: %s, target_shard_ID: %s, payload_hash: %s, random_hash: %s" % (msg.base, msg.target_shard_ID, hash(msg.payload), msg.hash)
+    return "base: %s, target_shard_ID: %s, payload_hash: %s, random_hash: %s" % (
+    msg.base, msg.target_shard_ID, hash(msg.payload), msg.hash)
 
 
 class MessagePayload:
     ''' has properties necessary to create tx on the new shard '''
-    def __init__(self, fromAddress, toAddress, value, data):#, nonce, gasPrice, gasLimit):
+
+    def __init__(self, fromAddress, toAddress, value, data):  # , nonce, gasPrice, gasLimit):
         self.fromAddress = fromAddress
         self.toAddress = DEADBEEF  # Using "toAddress here leads to an error, apparently not an address"
         self.value = value
@@ -31,6 +30,7 @@ class MessagePayload:
 
     def __eq__(self, message):
         return self.hash == message.hash
+
 
 class Message(object):
     def __init__(self, base, TTL, target_shard_ID, payload):
@@ -94,8 +94,10 @@ class SwitchMessage_ChangeParent(Message):
     def __eq__(self, message):
         return self.hash == message.hash
 
+
 class Block:
-    def __init__(self, ID, prevblock=None, switch_block=False, txn_log=[], sent_log={}, received_log={}, sources={}, parent_ID=None, child_IDs=None, routing_table=None, vm_state=initial_state):
+    def __init__(self, ID, prevblock=None, switch_block=False, txn_log=[], sent_log={}, received_log={}, sources={},
+                 parent_ID=None, child_IDs=None, routing_table=None, vm_state=initial_state):
 
         if sent_log == {}:
             for i in SHARD_IDS:
@@ -105,7 +107,7 @@ class Block:
             for i in SHARD_IDS:
                 received_log[i] = []
 
-        assert ID in SHARD_IDS, "expected shard ID"
+        assert ID in SHARD_IDS, "expected shard ID to be in the SHARD_IDS "
         self.shard_ID = ID
         self.prevblock = prevblock
         self.switch_block = switch_block
@@ -129,7 +131,6 @@ class Block:
             self.height = 0
         else:
             self.height = self.prevblock.height + 1
-
 
     def trace_history(self, other_shard_ID):
         b = self
@@ -166,7 +167,7 @@ class Block:
 
     def is_in_chain(self, block, strict=False):
         assert isinstance(block, Block), "expected block"
-        #assert block.is_valid(), "expected block to be valid"
+        # assert block.is_valid(), "expected block to be valid"
         if self.shard_ID != block.shard_ID:
             return False
 
@@ -237,7 +238,8 @@ class Block:
             else:
                 prev_num_received = 0
             num_new_received = num_received - prev_num_received
-            assert num_new_received >= 0, "expected growing received log, shard_ID: %s, ID: %s, was: %s, now: %s" % (self.shard_ID, ID, prev_num_received, num_received)
+            assert num_new_received >= 0, "expected growing received log, shard_ID: %s, ID: %s, was: %s, now: %s" % (
+            self.shard_ID, ID, prev_num_received, num_received)
             for i in range(num_new_received):
                 new_received[ID].append(self.received_log[ID][prev_num_received + i])
 
@@ -273,11 +275,10 @@ class Block:
         # if not isinstance(self.VM_state, EVM_State):
         #    return False, "expected an EVM State"
 
-        #leaving out the genesis blocks for now..
+        # leaving out the genesis blocks for now..
         if self.prevblock is None:
             return True, "Genesis block taken as valid"
         # --------------------------------------------------------------------#
-
 
         # we're going to need these over and over again:
         new_sent_messages = self.newly_sent()
@@ -293,7 +294,8 @@ class Block:
             for key, value in list(new_sent_messages.items()) + list(new_received_messages.items()):
                 if value is not None:
                     if len(value) and key not in [self.parent_ID, self.shard_ID] + self.child_IDs:
-                        return False, "Block on shard %s has sent or received message to shard %s which is not its neighbor or itself (%s messages)" % (self.shard_ID, key, new_sent_messages)
+                        return False, "Block on shard %s has sent or received message to shard %s which is not its neighbor or itself (%s messages)" % (
+                        self.shard_ID, key, new_sent_messages)
 
         # SHARD ID VALIDITY CONDITIONS
 
@@ -314,12 +316,12 @@ class Block:
                     return False, "received message with base on different shard"
 
             # sources of messages received from shard i are on shard i
-            assert ID in self.sources, "ID not in self.sources, ID: %s, self.sources: %s, shard_ID: %s" % (ID, self.sources, self.shard_ID)
+            assert ID in self.sources, "ID not in self.sources, ID: %s, self.sources: %s, shard_ID: %s" % (
+            ID, self.sources, self.shard_ID)
             if self.sources[ID] is not None:
                 if self.sources[ID].shard_ID != ID:
                     return False, "source for shard i on shard j != i"
         # --------------------------------------------------------------------#
-
 
         # MONOTONICITY/AGREEMENT CONDITIONS
         for ID in self.get_neighbors():
@@ -327,8 +329,9 @@ class Block:
             # sources are montonic
             if self.prevblock.sources[ID] is not None and ID in [self.parent_ID] + self.child_IDs:
                 if not self.sources[ID].is_in_chain(self.prevblock.sources[ID]):
-                    return False, "expected sources to be monotonic, shard_ID: %s, source shard id: %s, old height: %s, new height: %s, %s, %s" % (self.shard_ID, ID, self.prevblock.sources[ID].height, self.sources[ID].height, self.sources[ID], self.prevblock.sources[ID])
-
+                    return False, "expected sources to be monotonic, shard_ID: %s, source shard id: %s, old height: %s, new height: %s, %s, %s" % (
+                    self.shard_ID, ID, self.prevblock.sources[ID].height, self.sources[ID].height, self.sources[ID],
+                    self.prevblock.sources[ID])
 
             # previous tx list is a prefix of this txn list
             prev_num_txs = len(self.prevblock.txn_log)
@@ -337,7 +340,8 @@ class Block:
                 return False, "expected current txn log to be an extension of the previous -- error 1"
             for i in range(prev_num_txs):
                 if self.txn_log == []:
-                    return False, "expected current txn log to be an extension of the previous -- error 2, shard_id: %s, old_txn_num: %s, new_txn_num: %s" % (self.shard_ID, prev_num_txs, len(self.txn_log))
+                    return False, "expected current txn log to be an extension of the previous -- error 2, shard_id: %s, old_txn_num: %s, new_txn_num: %s" % (
+                    self.shard_ID, prev_num_txs, len(self.txn_log))
                 if self.prevblock.txn_log[i] != self.txn_log[i]:
                     return False, "expected current txn log to be an extension of the previous -- error 3"
 
@@ -354,11 +358,13 @@ class Block:
             prev_num_received = len(self.prevblock.received_log[ID])
             new_num_received = len(self.received_log[ID])
             if new_num_received < prev_num_received:
-                return False,  "expected current received log to be an extension of the previous -- error 1"
+                return False, "expected current received log to be an extension of the previous -- error 1"
             for i in range(prev_num_received):
                 if self.prevblock.received_log[ID][i] != self.received_log[ID][i]:
-                    return False, "expected current received log to be an extension of the previous -- error 2, shard_ID: %s, log shard ID: %s, old length: %s, new_length: %s, items: %s <> %s, pos: %s" % (self.shard_ID, ID, len(self.prevblock.received_log[ID]), len(self.received_log[ID]), format_msg(self.prevblock.received_log
-                        [ID][i]), format_msg(self.received_log[ID][i]), i)
+                    return False, "expected current received log to be an extension of the previous -- error 2, shard_ID: %s, log shard ID: %s, old length: %s, new_length: %s, items: %s <> %s, pos: %s" % (
+                    self.shard_ID, ID, len(self.prevblock.received_log[ID]), len(self.received_log[ID]),
+                    format_msg(self.prevblock.received_log
+                               [ID][i]), format_msg(self.received_log[ID][i]), i)
 
             # bases of sent messages are monotonic
             if len(self.prevblock.sent_log[ID]) > 0:
@@ -389,7 +395,6 @@ class Block:
                         m1 = m2
                         m2 = message
 
-
                     if not m2.base.is_in_chain(m1.base):
                         return False, "expected bases to be monotonic -- error 2"
 
@@ -406,8 +411,8 @@ class Block:
                 if len(new_sent_messages[ID]) > 0:
                     base = new_sent_messages[ID][-1].base  # most recent base from this block
                     if not source.agrees(base):  # source is also after ^^
-                        return False, "expected bases to be in the chain of sources -- error 2 (sid: %s, id: %s)" % (self.shard_ID, ID)
-
+                        return False, "expected bases to be in the chain of sources -- error 2 (sid: %s, id: %s)" % (
+                        self.shard_ID, ID)
 
         # --------------------------------------------------------------------#
         # SOURCE SYNCHRONICITY CONDITIONS
@@ -415,7 +420,8 @@ class Block:
             if ID is None:
                 continue
 
-            assert ID in self.sources, "ID not in self.sources, ID: %s, self.sources: %s, shard_ID: %s" % (ID, self.sources, shard_ID)
+            assert ID in self.sources, "ID not in self.sources, ID: %s, self.sources: %s, shard_ID: %s" % (
+            ID, self.sources, shard_ID)
             if self.sources[ID] is not None:
 
                 source = self.sources[ID]
@@ -433,7 +439,8 @@ class Block:
                     if m.base.height + m.TTL <= self.height:
                         self.trace_history(ID)
                         source.trace_history(self.shard_ID)
-                        return False, "expected all expired messages in source to be recieved, shard_ID: %s ID=%s switch_block?: %s" % (self.shard_ID, ID, self.switch_block)
+                        return False, "expected all expired messages in source to be recieved, shard_ID: %s ID=%s switch_block?: %s" % (
+                        self.shard_ID, ID, self.switch_block)
 
                 # our sent messages are received by the TTL as seen from our sources
                 for m in self.sent_log[ID]:  # inefficient
@@ -450,7 +457,8 @@ class Block:
             # newly received messages are received by the TTL of the base
             for message in new_received_messages[ID]:
                 if not self.is_in_chain(message.base):
-                    return False, "expected only to receive messages with base in chain, my shard id: %s, their shard id: %s" % (self.shard_ID, ID)
+                    return False, "expected only to receive messages with base in chain, my shard id: %s, their shard id: %s" % (
+                    self.shard_ID, ID)
                 # Message on received this block are expired if...
                 if message.base.height + message.TTL < self.height:
                     return False, "message not received within TTL of its base"
@@ -463,7 +471,7 @@ class Block:
                         continue
                     # m1 from this shard that hasn't been received by m2.base, and is expired if...
                     if m1.base.height + m1.TTL <= m2.base.height:
-                            return False, "expected sent messages to be received by the TTL"
+                        return False, "expected sent messages to be received by the TTL"
 
         # --------------------------------------------------------------------#
         # ALL RECEIVED MESSAGES THAT DO NOT TARGET THIS SHARD MUST BE REROUTED
